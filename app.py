@@ -2,9 +2,11 @@ from  flask import Flask, request, jsonify
 import mysql.connector
 
 NOT_FOUND = 404
+BAD_REQUEST = 400
 
 app = Flask(__name__)
 
+# Database connection
 def build_connection():
     return mysql.connector.connect(
         host="localhost",
@@ -13,137 +15,99 @@ def build_connection():
         database="users"
     )
 
-def data_db_sql_select(sql):
+# Generic function to exeute queries
+def execute_query(query, params=None, fetch_one=False, fetch_all=False, commit=False):
     connection = build_connection()
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(query, params)
+
+    result = None
+
+    if fetch_one:
+        result = cursor.fetchone()
+    elif fetch_all:
+        result = cursor.fetchall()
+    elif commit:
+        connection.commit()
     
-    cursor = connection.cursor()
-    cursor.execute(sql)
-
-    result = cursor.fetchone()
-
     cursor.close()
     connection.close()
 
     return result
 
-def data_sql_insert(sql):
-    connection = build_connection()
-
-    cursor = connection.cursor()
-    cursor.execute(sql)
-
-    cursor.close
-    connection.close()
-
-def data_db_sql_update(sql):
-    connection = build_connection()
-
-    cursor = connection.cursor()
-    cursor.execute(sql)
-
-    connection.commit()
-
-    cursor.close()
-    connection.close()
-
-def data_delete_sql(sql):
-    connection = build_connection()
-
-    cursor = connection.cursor()
-    cursor.execute(sql)
-
-    connection.commit()
-
-    cursor.close()
-    connection.close()
-
-def build_update_sql(request, id):
-    first_part_update = "UPDATE users SET "
-    last_part_update = " WHERE id = " + id
-
-    mean_words= []
-    data = request.get_json()
-
-    for key in data.keys():
-        value = data[key]
-        mean_words.append(f"{key}=\"{value}\"")
-
-    mean_part_update_sql = ",".join(mean_words)
-    return first_part_update + mean_part_update_sql + last_part_update
-
-def build_insert_sql(request):
-    first_part_insert = "INSERT INTO users "
-    last_part_insert = " VALUES " 
-
-    mean_words= []
-    data = request.get_json()
-
-    for key in data.keys():
-        value = data[key]
-        mean_words.append(f"{key}=\"{value}\"")
-
-    mean_part_update_sql = ",".join(mean_words)
-    return first_part_insert + mean_part_update_sql + last_part_insert
-
-
-def get_id_user(id):
-
-    if id == None:
-        return jsonify({"message":"Inform your id if exists"}), NOT_FOUND
-    
-    user = data_db_sql_select("SELECT * FROM users WHERE id = " + id)
-
-    if user == None:
-        return jsonify({"message":"This user does not exist"}), NOT_FOUND
-
+# Validate if required fields are present
 def validate_data(data):
     required_fields = ["name", "lastname", "age"]
     for field in required_fields:
         if not data.get(field):
-            return jsonify({"message":"Field {field} is required"})
-    
+            return jsonify({"message":f"Field '{field}' is required"}), BAD_REQUEST
+
+# Validate if user id exists in database
+def get_user_by_id(user_id):
+    user = execute_query("SELECT * FROM users WHERE id = %s", (user_id,), fetch_one=True)
+    if not user:
+        return jsonify({"message":"User not found"}), NOT_FOUND
+    return user
+
+# Route GET to search for an user by the id 
 @app.route("/user", methods=["GET"])
 def get_user():
-    id = request.args.get("id")
+    user_id = int(request.args.get("id"))
+    if not user_id:
+        return jsonify({"message":"Please provide a user ID"}), BAD_REQUEST
 
-    if id == None:
-        return jsonify({"message":"Inform your id if exists"}), NOT_FOUND
-
-    user = data_db_sql_select("SELECT * FROM users WHERE id = " + id)
-
-    if user == None:
-        return jsonify({"message":"This user does not exist"}), NOT_FOUND
+    user = get_user_by_id(user_id)
 
     return jsonify(user)
 
+# Route to insert a new user into database
 @app.route("/user", methods=["POST"])
 def insert_user():
     data = request.json;
-    validate_data(data)
+    validation_error = validate_data(data)
 
+    if validation_error:
+        return validation_error
 
+    query = "INSERT INTO users (name, lastname, age) VALUE (%s, %s, %s)"
+    params = (data["name"], data["lastname"], data["age"])
+    execute_query(query, params, commit=True)
 
-    return jsonify({"message": "The user was created"})
+    return jsonify({"message": "User created successfully"}), 201
 
+# Route to update an user by the ID
 @app.route("/user", methods=["PUT"])
 def update_user():
-    id = request.args.get("id")
+    user_id = request.args.get("id")
+    if not user_id:
+        return jsonify({"message": "Please provide an user ID"}), BAD_REQUEST
+    
+    user = get_user_by_id(user_id)
 
-    get_id_user(id)
+    if isinstance(user, tuple):
+        return user
+    
+    data = request.json
+    update_fields = ",".join(f"{key} = %s" for key in data.keys())
+    query = f"UPDATE users SET {update_fields} WHERE id = %s"
+    params = tuple(data.values()) + (user_id,)
 
-    update_sql = build_update_sql(request, id)
-    data_db_sql_update(update_sql)
+    execute_query(query, params, commit=True)
+    return jsonify({"message": "User updated successfully"}), 200
 
-    return jsonify({"message": "update was done successfully"})
-
+# Route to delete an user by the ID
 @app.route("/user", methods=["DELETE"])
 def delete_user():
-    id = request.args.get("id")
+    user_id = int(request.args.get("id"))
+    if not user_id:
+        return jsonify({"message": "Please provide an user ID"}), BAD_REQUEST
+    
+    user = get_user_by_id(user_id)
+    if isinstance(user, tuple):
+        return user
 
-    get_id_user(id)
-
-    data_delete_sql("DELETE FROM users WHERE id = " + id)
-    return jsonify({"message":"User deleted"})
+    execute_query("DELETE FROM users WHERE id = %s", (user_id,), commit=True)
+    return jsonify({"message":"User deleted successfully"}), 200
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
